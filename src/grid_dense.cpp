@@ -33,11 +33,11 @@ DenseGrid::DenseGrid(const Grid& grid) :
 
 DenseGrid::DenseGrid(const std::shared_ptr<Grid>& grid) : DenseGrid(*grid) {}
 
-DenseGrid::DenseGrid(size_t w, size_t h, size_t d, const uint8_t* data) :
+DenseGrid::DenseGrid(size_t w, size_t h, size_t d, const uint8_t* data, bool exact) :
     Grid(),
     n_voxels(w, h, d),
     min_value(0),
-    max_value(1)
+    max_value(exact ? 255.f : 1.f)
 {
     // parallel copy voxel data
     std::vector<uint32_t> slices(n_voxels.z);

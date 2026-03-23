@@ -11,6 +11,7 @@ namespace fs = std::filesystem;
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/string_cast.hpp>
 #include <json11/json11.hpp>
+#include <zlib.h>
 
 namespace voldata {
 
@@ -194,28 +195,85 @@ Volume::GridPtr Volume::load_grid(const std::string& filename, const std::string
     else if (extension == ".vdb") {
         return std::make_shared<OpenVDBGrid>(path, gridname);
     }
+    // handle NIfTI segmentation files
+    else if (path.filename().string().find(".nii") != std::string::npos) {
+        gzFile f = gzopen(path.string().c_str(), "rb");
+        if (!f) throw std::runtime_error("Unable to open NIfTI file: " + path.string());
+
+        uint8_t header[348];
+        if (gzread(f, header, 348) != 348) {
+            gzclose(f);
+            throw std::runtime_error("Failed to read NIfTI header");
+        }
+
+        short dim[8];
+        for (int i=0; i<8; ++i) dim[i] = *(short*)(header + 40 + i*2);
+        short datatype = *(short*)(header + 70);
+        float vox_offset = *(float*)(header + 108);
+
+        if (datatype != 2) {
+            gzclose(f);
+            throw std::runtime_error("Only 8-bit unsigned char NIfTI is supported for segmentation");
+        }
+
+        gzseek(f, (long)vox_offset, SEEK_SET);
+
+        size_t num_voxels = (size_t)dim[1] * dim[2] * dim[3];
+        std::vector<uint8_t> data(num_voxels);
+        size_t bytes_read = gzread(f, data.data(), num_voxels);
+        if (bytes_read != num_voxels) {
+            gzclose(f);
+            throw std::runtime_error("Failed to read NIfTI data");
+        }
+        gzclose(f);
+
+        // Python script saves shape as [Rows, Cols, Slices] which is [Y_dim, X_dim, Z_dim].
+        // Fastest varying in NIfTI is the first dimension. So src_idx = z * (X_dim * Y_dim) + x * Y_dim + y, where x is Col and y is Row.
+        // We want DenseGrid to serve X = Cols, Y = Rows, Z = Slices.
+        size_t Y_dim = dim[1];
+        size_t X_dim = dim[2];
+        size_t Z_dim = dim[3];
+
+        std::vector<uint8_t> transposed(num_voxels);
+        for (size_t z = 0; z < Z_dim; ++z) {
+            for (size_t y = 0; y < Y_dim; ++y) {
+                for (size_t x = 0; x < X_dim; ++x) {
+                    size_t src_idx = z * (X_dim * Y_dim) + x * Y_dim + y;
+                    size_t dst_idx = z * (X_dim * Y_dim) + y * X_dim + x;
+                    transposed[dst_idx] = data[src_idx];
+                }
+            }
+        }
+        
+        return std::make_shared<DenseGrid>(X_dim, Y_dim, Z_dim, transposed.data(), true);
+    }
     // handle NanoVDB files
     else if (extension == ".nvdb") {
         return std::make_shared<NanoVDBGrid>(path, gridname);
     }
     // handle dicom files
-    else if (extension == ".dcm") {
+    else if (extension == ".dcm" || fs::is_directory(path)) {
         // search directory for other dicom files
         std::vector<fs::path> dicom_files;
-        for(auto& p : fs::directory_iterator(path.parent_path())) {
+        fs::path search_path = fs::is_directory(path) ? path : path.parent_path();
+        for(auto& p : fs::directory_iterator(search_path)) {
             std::string ext = p.path().extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
             if (ext == ".dcm")
                 dicom_files.push_back(p);
         }
-        // lexographic sort
-        std::sort(dicom_files.begin(), dicom_files.end(), [](const fs::path& lhs, const fs::path& rhs) {
-            if (lhs.string().size() == rhs.string().size())
-                return lhs.string() < rhs.string();
-            else
-                return lhs.string().size() < rhs.string().size();
-        });
-        return std::make_shared<DICOMGrid>(dicom_files);
+        if (!dicom_files.empty()) {
+            // lexographic sort
+            std::sort(dicom_files.begin(), dicom_files.end(), [](const fs::path& lhs, const fs::path& rhs) {
+                if (lhs.string().size() == rhs.string().size())
+                    return lhs.string() < rhs.string();
+                else
+                    return lhs.string().size() < rhs.string().size();
+            });
+            return std::make_shared<DICOMGrid>(dicom_files);
+        } else if (fs::is_directory(path)) {
+            throw std::runtime_error("Directory contains no DICOM files: " + path.string());
+        }
     }
     // handle binary dense grid
     else if (extension == ".dense") {
@@ -259,8 +317,12 @@ Volume::VolumePtr Volume::load_folder(const std::string& path, std::vector<std::
     std::cout << "Loading grid files from " << path << "..." << std::endl;
     // list files in given directory
     std::vector<fs::path> files;
-    for(auto& p : fs::directory_iterator(fs::path(path)))
+    for(auto& p : fs::directory_iterator(fs::path(path))) {
+        std::string filename = p.path().filename().string();
+        if (filename.find("segmentation") != std::string::npos) continue; // Explicitly skip segmentation files
+        if (filename == "lut.txt") continue;
         files.push_back(p);
+    }
     // lexographic sort
     std::sort(files.begin(), files.end(), [](const fs::path& lhs, const fs::path& rhs) {
         if (lhs.string().size() == rhs.string().size())
@@ -289,6 +351,12 @@ Volume::VolumePtr Volume::load_folder(const std::string& path, std::vector<std::
             } catch (std::runtime_error& e) {}
         }
     });
+    
+    // remove empty frames (e.g. from files that failed to load any requested gridname)
+    result->grids.erase(
+        std::remove_if(result->grids.begin(), result->grids.end(), [](const GridFrame& f) { return f.empty() || f.find("density") == f.end(); }),
+        result->grids.end());
+
     return result;
 }
 
