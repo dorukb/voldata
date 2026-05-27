@@ -253,6 +253,9 @@ Volume::GridPtr Volume::load_grid(const std::string& filename, const std::string
     }
     // handle dicom files
     else if (extension == ".dcm" || fs::is_directory(path)) {
+        if (gridname != "density") {
+            throw std::runtime_error("DICOM only supports the 'density' grid");
+        }
         // search directory for other dicom files
         std::vector<fs::path> dicom_files;
         fs::path search_path = fs::is_directory(path) ? path : path.parent_path();
@@ -354,7 +357,7 @@ Volume::VolumePtr Volume::load_folder(const std::string& path, std::vector<std::
     
     // remove empty frames (e.g. from files that failed to load any requested gridname)
     result->grids.erase(
-        std::remove_if(result->grids.begin(), result->grids.end(), [](const GridFrame& f) { return f.empty() || f.find("density") == f.end(); }),
+        std::remove_if(result->grids.begin(), result->grids.end(), [](const GridFrame& f) { return f.empty(); }),
         result->grids.end());
 
     return result;
