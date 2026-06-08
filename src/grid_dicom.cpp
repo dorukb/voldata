@@ -84,7 +84,7 @@ DICOMGrid::DICOMGrid(const std::vector<fs::path>& files) :
             transform[1][1] = psy * dicom_datasets[i].getFloat(imebra::TagId(imebra::tagId_t::ImageOrientationPatient_0020_0037), 4, 1.f);
             transform[1][2] = psy * dicom_datasets[i].getFloat(imebra::TagId(imebra::tagId_t::ImageOrientationPatient_0020_0037), 5, 0.f);
 
-            transform[2][2] = dicom_datasets[i].getFloat(imebra::TagId(imebra::tagId_t::SliceThickness_0018_0050), 0, 1.f) * std::max(psx, psy);
+            transform[2][2] = dicom_datasets[i].getFloat(imebra::TagId(imebra::tagId_t::SliceThickness_0018_0050), 0, 1.f);
 
             transform[3][0] = dicom_datasets[i].getFloat(imebra::TagId(imebra::tagId_t::ImagePositionPatient_0020_0032), 0, 0.f);
             transform[3][1] = dicom_datasets[i].getFloat(imebra::TagId(imebra::tagId_t::ImagePositionPatient_0020_0032), 1, 0.f);
